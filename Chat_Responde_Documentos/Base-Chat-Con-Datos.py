@@ -10,14 +10,13 @@ from langchain.document_loaders import DirectoryLoader
 from langchain.document_loaders import IFixitLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 
-from langchain.vectorstores import FAISS
-from langchain.embeddings.huggingface import HuggingFaceEmbeddings
-
+from langchain.chains import VectorDBQA
+from langchain.vectorstores import Chroma
+from langchain.embeddings import HuggingFaceEmbeddings
 
 
 import gradio as gr
 
-import faiss
 
 import numpy as np
 
@@ -29,9 +28,10 @@ TOKENIZER = "MBZUAI/LaMini-Flan-T5-783M"
 # LORA_WEIGHTS = ""
 # TOKENIZER = "bigscience/T0_3B"
 
-device = "cuda"
+device = "cpu"
 
 memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
+
 
 tokenizer = AutoTokenizer.from_pretrained(TOKENIZER, model_max_length = 1024)
 model = AutoModelForSeq2SeqLM.from_pretrained(
@@ -46,49 +46,42 @@ pipe = pipeline(
     max_length=1024,
     temperature=0.6,
     top_p=0.95,
-    device=0,
+    device=-1,
     repetition_penalty= 1.2 
 )
 
 local_llm = HuggingFacePipeline(pipeline=pipe)
 
-emb = HuggingFaceEmbeddings()
-try:
-    db = FAISS.load_local("./data/index",emb) 
-except:    
-    loader = DirectoryLoader('./data', glob="**/*.txt")
-    documents = loader.load()
-    print (f"Found {len(documents)} document")
-    #print (f"{data.page_content}")
-    print (f"You have {len(documents)} document")
-    # Get your splitter ready
-    #loader = IFixitLoader("https://www.ifixit.com/Teardown/Banana+Teardown/811")
-    #data = loader.load()
-    #concatente document and data
-    #documents = documents + data
 
-    text_splitter = RecursiveCharacterTextSplitter(chunk_size=100, chunk_overlap=10)
-
+emb = HuggingFaceEmbeddings(model_name="sentence-transformers/all-mpnet-base-v2",model_kwargs={'device': 'cpu'} )
     
+loader = DirectoryLoader('./data', glob="**/*.txt")
+documents = loader.load()
+print (f"Found {len(documents)} document")
+#print (f"{data.page_content}")
+print (f"You have {len(documents)} document")
+# Get your splitter ready
+loaderIFixit = IFixitLoader("https://www.ifixit.com/Guide/Nintendo+DS+Lite+Disassembly/86279")
+iFixitDoc = loaderIFixit.load()
+#concatente document and data
+documents = documents + iFixitDoc
+text_splitter = RecursiveCharacterTextSplitter(chunk_size=200, chunk_overlap=20)
+# Split your docs into texts
+texts = text_splitter.split_documents(documents)
 
-    # Split your docs into texts
-    texts = text_splitter.split_documents(documents)
-    # Embedd your texts
-    db = FAISS.from_documents(texts, emb)
-    FAISS.save_local(db, "./data/index")
-    
+# Embedd your texts
+db = Chroma.from_documents(texts, emb, persist_directory="./data/index")
+   
 # Init your retriever. Asking for just 1 document back
 #retriever = db.as_retriever()
-
-
-conversation = ConversationalRetrievalChain.from_llm(local_llm, db.as_retriever(), memory=memory, verbose=True)
+conversation =  VectorDBQA.from_chain_type(llm=local_llm, chain_type="stuff", vectorstore=db)
 
 
 def evaluate(
     instruction
 ):
-    generation_output = conversation({"question": instruction})
-    return generation_output["answer"]
+    generation_output = conversation({"query": instruction})
+    return generation_output["result"]
 
 
 def add_text(history, text):
@@ -123,4 +116,6 @@ with gr.Blocks() as demo:
     )
 
 demo.launch()
+
+
 
